@@ -1,0 +1,39 @@
+.dark {
+    color-scheme: dark;
+}
+
+.dark body {
+    @apply bg-gray-900 text-gray-100;
+}
+
+.dark .bg-white {
+    @apply bg-gray-800;
+}
+
+#prediction-card {
+    transition: all 0.3s ease;
+}
+
+.animate-pulse {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* Styles pour les tooltips des graphiques */
+.chart-tooltip {
+    @apply bg-white dark:bg-gray-800 p-2 rounded shadow-lg border border-gray-200 dark:border-gray-700;
+    pointer-events: none;
+}
+
+.chart-tooltip .label {
+    @apply font-bold text-sm;
+}
+
+.chart-tooltip .value {
+    @apply text-indigo-600 dark:text-indigo-400 font-medium;
+}
