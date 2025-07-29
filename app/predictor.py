@@ -3,83 +3,108 @@ from tensorflow.keras.models import load_model
 from sklearn.preprocessing import RobustScaler
 import requests
 import time
-import json
 from threading import Lock
 from collections import deque
 import talib
 from scipy import stats
+import json
+import os
 
 class AviatorPredictor:
     def __init__(self):
-        self.model = load_model('models/aviator_model.h5')
+        self.model = load_model('app/models/aviator_model.h5')
         self.scaler = RobustScaler()
         self.history = []
-        self.prediction_history = deque(maxlen=20)  # Stocke les dernières prédictions
-        self.error_history = deque(maxlen=20)       # Stocke les erreurs récentes
-        self.volatility_history = deque(maxlen=50)  # Mesure la volatilité
+        self.prediction_history = deque(maxlen=20)
+        self.error_history = deque(maxlen=20)
+        self.volatility_history = deque(maxlen=50)
         self.current_prediction = None
         self.lock = Lock()
         self.trend = "neutral"
+        self.settings = {
+            'alert_threshold': 2.0,
+            'confidence_threshold': 0.7
+        }
         self.load_initial_data()
+        self.load_settings()
+
+    def load_settings(self):
+        try:
+            if os.path.exists('settings.json'):
+                with open('settings.json', 'r') as f:
+                    self.settings = json.load(f)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+
+    def save_settings(self):
+        try:
+            with open('settings.json', 'w') as f:
+                json.dump(self.settings, f)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+
+    def update_settings(self, alert_threshold=None, confidence_threshold=None):
+        try:
+            if alert_threshold is not None:
+                self.settings['alert_threshold'] = float(alert_threshold)
+            if confidence_threshold is not None:
+                self.settings['confidence_threshold'] = float(confidence_threshold)
+            self.save_settings()
+            return True
+        except:
+            return False
+
+    def load_initial_data(self):
+        try:
+            response = requests.get('https://aviatorengine.1win.com/api/history', timeout=10)
+            data = response.json()
+            self.history = [x['multiplier'] for x in data]
+            if len(self.history) > 30:
+                self.scaler.fit(np.array(self.history).reshape(-1, 1))
+        except Exception as e:
+            print(f"Error loading initial data: {e}")
+            self.history = [1.0] * 30
+
+    def start_realtime_updates(self):
+        while True:
+            try:
+                self.update_prediction()
+                time.sleep(5)
+            except Exception as e:
+                print(f"Update error: {e}")
+                time.sleep(10)
 
     def calculate_confidence(self):
-        """Calcule un score de confiance composite"""
-        if len(self.error_history) < 5 or len(self.prediction_history) < 5:
-            return 0.5  # Valeur par défaut si pas assez de données
+        if len(self.error_history) < 3 or len(self.prediction_history) < 3:
+            return 0.5
+            
+        recent_errors = list(self.error_history)[-3:]
+        accuracy = 1 - np.mean(recent_errors)
         
-        # 1. Exactitude récente (40% du score)
-        recent_errors = list(self.error_history)[-5:]
-        accuracy_component = 1 - (np.mean(recent_errors) / 2)  # Normalisé à 0-1
+        consistency = 1 / (1 + np.std(list(self.prediction_history)[-5:]))
+        volatility = 1 / (1 + (np.mean(list(self.volatility_history)[-5:]) if self.volatility_history else 1))
+        trend_strength = 0.8 if self.trend != "neutral" else 0.5
         
-        # 2. Cohérence des prédictions (30%)
-        prediction_std = np.std(list(self.prediction_history)[-5:])
-        consistency_component = 1 / (1 + prediction_std)
-        
-        # 3. Volatilité du marché (20%)
-        volatility = np.mean(list(self.volatility_history)[-10:]) if self.volatility_history else 1.0
-        volatility_component = 1 / (1 + volatility)
-        
-        # 4. Force de la tendance (10%)
-        trend_component = 0.8 if self.trend != "neutral" else 0.5
-        
-        # Combinaison pondérée
-        confidence = (
-            0.4 * accuracy_component +
-            0.3 * consistency_component +
-            0.2 * volatility_component +
-            0.1 * trend_component
-        )
-        
-        # Ajustement final
+        confidence = 0.5*accuracy + 0.3*consistency + 0.1*volatility + 0.1*trend_strength
         return np.clip(confidence, 0.1, 0.95)
 
     def detect_trend(self, data):
-        """Détecte la tendance avec plusieurs indicateurs"""
         if len(data) < 10:
             return "neutral"
             
         prices = np.array(data)
-        
-        # 1. Régression linéaire
         x = np.arange(len(data))
         slope, _, _, _, _ = stats.linregress(x, prices)
-        
-        # 2. MACD
-        macd = talib.MACD(prices)[2][-1]  # Histogramme MACD
-        
-        # 3. Moyenne mobile
+        macd = talib.MACD(prices)[2][-1]
         sma = talib.SMA(prices, timeperiod=5)[-1]
         
-        # Décision composite
         if slope > 0.05 and macd > 0 and prices[-1] > sma:
             return "up"
         elif slope < -0.05 and macd < 0 and prices[-1] < sma:
             return "down"
-        else:
-            return "neutral"
+        return "neutral"
 
     def update_volatility(self):
-        """Calcule la volatilité récente"""
         if len(self.history) >= 10:
             recent = self.history[-10:]
             returns = np.diff(recent) / recent[:-1]
@@ -91,40 +116,63 @@ class AviatorPredictor:
             current = response.json()['multiplier']
             
             with self.lock:
-                # Mise à jour de l'historique
                 self.history.append(current)
                 if len(self.history) > 500:
                     self.history = self.history[-500:]
                 
-                # Calculs techniques
                 self.update_volatility()
                 self.trend = self.detect_trend(self.history[-30:])
                 
-                # Prédiction
                 if len(self.history) >= 30:
                     sequence = np.array(self.history[-30:]).reshape(1, 30, 1)
                     normalized = self.scaler.transform(sequence.reshape(-1, 1))
                     prediction_norm = self.model.predict(normalized.reshape(1, 30, 1))
                     prediction = self.scaler.inverse_transform(prediction_norm)[0][0]
                     
-                    # Mise à jour des historiques
                     if self.current_prediction:
-                        last_pred = self.current_prediction['prediction']
-                        error = abs(last_pred - current) / current
+                        error = abs(self.current_prediction['prediction'] - current) / current
                         self.error_history.append(error)
                     
                     self.prediction_history.append(prediction)
                     
-                    # Calcul de la confiance
-                    confidence = self.calculate_confidence()
-                    
                     self.current_prediction = {
                         'current': current,
                         'prediction': prediction,
-                        'confidence': confidence,
+                        'confidence': self.calculate_confidence(),
                         'trend': self.trend,
-                        'volatility': np.mean(list(self.volatility_history)[-5:]) if self.volatility_history else 1.0,
-                        'timestamp': time.time()
+                        'volatility': np.mean(list(self.volatility_history)[-3:]) if self.volatility_history else 1.0
                     }
         except Exception as e:
             print(f"Prediction update failed: {e}")
+
+    def get_current_prediction(self):
+        with self.lock:
+            if self.current_prediction:
+                return (
+                    self.current_prediction['current'],
+                    self.current_prediction['prediction'],
+                    self.current_prediction['confidence'],
+                    self.current_prediction['trend'],
+                    self.current_prediction['volatility']
+                )
+            return None
+
+    def get_history(self):
+        with self.lock:
+            return self.history[-100:]
+
+    def get_performance_metrics(self):
+        with self.lock:
+            if not self.error_history:
+                return {}
+            
+            recent_errors = list(self.error_history)[-5:] or [0]
+            recent_preds = list(self.prediction_history)[-5:] or [1]
+            
+            return {
+                'avg_error': float(np.mean(recent_errors)),
+                'last_error': float(recent_errors[-1]),
+                'stability': float(1 - np.std(recent_preds)/np.mean(recent_preds)),
+                'success_rate': float(sum(e < 0.1 for e in recent_errors)/len(recent_errors)),
+                'settings': self.settings
+            }
