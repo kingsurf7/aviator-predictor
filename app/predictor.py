@@ -175,4 +175,4 @@ class AviatorPredictor:
                 'stability': float(1 - np.std(recent_preds)/np.mean(recent_preds)),
                 'success_rate': float(sum(e < 0.1 for e in recent_errors)/len(recent_errors)),
                 'settings': self.settings
-            }
+                }
